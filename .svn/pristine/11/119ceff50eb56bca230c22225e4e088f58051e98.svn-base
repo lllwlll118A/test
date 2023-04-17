@@ -1,0 +1,187 @@
+import axios from 'axios'
+import { Notification, MessageBox, Message } from 'element-ui'
+import store from '@/store'
+import { getToken } from '@/utils/auth'
+import errorCode from '@/utils/errorCode'
+
+
+// 通过一个变量来标记 MessageBox 状态，如果点击 关闭 , 去登录，取消 按钮操作，标记此 MessageBox 已经关闭，否则不创建 MessageBox 询问框
+let messageBoxFlag = 0 // 默认 MessageBox 未打开
+axios.defaults.headers['Content-Type'] = 'application/json;charset=utf-8'
+// 创建axios实例
+
+// var baseURL = 'http://192.168.96.99:8080/oa-admin'
+var baseURL
+
+switch (process.env.VUE_APP_MODE) {
+    case "development":
+        baseURL = 'http://222.180.255.170:8000/oa-admin/'//代理
+        // baseURL = `http://192.168.96.100:8000/oa-admin/` //cjb
+        // baseURL = `http://192.168.96.66/oa-admin/` //本地前端项目端口
+        break
+    case "test":
+        baseURL = 'http://222.180.255.170:8000/oa-admin/'
+        break
+    case "uat":
+        baseURL = "https://www.wqscf.com/oa-admin-test"
+        break
+    case "production":
+        baseURL = "https://www.wqscf.com/oa-admin/"
+        break
+    default:
+        break
+}
+
+// var baseURL = 'http://192.168.96.100:8080/oa-admin'
+// baseURL: process.env.VUE_APP_BASE_API,
+const service = axios.create({
+    // axios中请求配置有baseURL选项，表示请求URL公共部分
+    baseURL,
+    // 超时
+    // timeout: 30000
+})
+// request拦截器
+service.interceptors.request.use(config => {
+    // 是否需要设置 token
+    const isToken = (config.headers || {}).isToken === false
+    if (getToken() && !isToken) {
+        config.headers['Authorization'] = 'Bearer ' + getToken() // 让每个请求携带自定义token 请根据实际情况自行修改
+    }
+    //  处理两种不同分页参数传参方式
+    if (config.data?.urlPageParam) {
+        config.url = `${config.url}?pageNum=${config.data.pageNum}&pageSize=${config.data.pageSize}`
+    }
+    // get请求映射params参数
+    if (config.method === 'get' && config.params) {
+        let url = config.url + '?';
+        for (const propName of Object.keys(config.params)) {
+            const value = config.params[propName];
+            var part = encodeURIComponent(propName) + "=";
+            if (value && typeof (value) !== "undefined") {
+                if (typeof value === 'object') {
+                    for (const key of Object.keys(value)) {
+                        let params = propName + '[' + key + ']';
+                        var subPart = encodeURIComponent(params) + "=";
+                        url += subPart + encodeURIComponent(value[key]) + "&";
+                    }
+                } else {
+                    url += part + encodeURIComponent(value) + "&";
+                }
+            }
+        }
+        url = url.slice(0, -1);
+        config.params = {};
+        config.url = url;
+    }
+    return config
+}, error => {
+    console.log(error)
+    Promise.reject(error)
+})
+
+// 响应拦截器
+service.interceptors.response.use(res => {
+
+    console.log(res)
+
+    if (
+        res.headers['content-type'] ==
+        'application/vnd.ms-excel;charset=UTF-8'
+    ) {
+        // 获取名称
+        let disposition = res.headers['content-disposition']
+        let fileName = !disposition ? '未命名.xls' : decodeURIComponent(disposition.split("=")[1])
+        console.log(fileName)
+
+        if ('msSaveOrOpenBlob' in navigator) {// IE
+            window.navigator.msSaveOrOpenBlob(
+                new Blob([res.data]),
+                fileName
+            )
+        } else {//非IE
+            let blob = new Blob([res.data], {
+                type: 'application/vnd.ms-excel;charset=UTF-8'
+            })
+            let objectUrl = URL.createObjectURL(blob)
+            downloadFileByBlob(objectUrl, fileName)
+        }
+        return Promise.resolve('ok')
+    }
+
+    // 未设置状态码则默认成功状态
+    const code = res.data.code || 200;
+    // 获取错误信息
+    const msg = errorCode[code] || res.data.msg || errorCode['default']
+    if (code === 401) {
+        if (messageBoxFlag === 0) {
+            messageBoxFlag++
+            MessageBox.alert('登录状态已过期，请重新登录', '系统提示', {
+                confirmButtonText: '重新登录',
+                type: 'warning'
+            }
+            ).then(() => {
+                messageBoxFlag = 0
+                globalVue.$store.dispatch('LogOut').then(() => {
+                    globalVue.$router.push({ path: '/login' })
+                })
+            }).catch(() => {
+                messageBoxFlag = 0
+            })
+        }
+
+    } else if (code === 500) {
+        Message({
+            message: msg,
+            type: 'error'
+        })
+        return Promise.reject(new Error(msg))
+    } else if (code !== 200) {
+        Notification.error({
+            title: msg
+        })
+        return Promise.reject('error')
+    } else {
+        if (res.data instanceof ArrayBuffer) {
+            Message.closeAll()
+            return Promise.reject(res)
+        }
+        return res.data
+    }
+},
+    error => {
+        console.log('err' + error)
+        let { message } = error;
+        if (message == "Network Error") {
+            message = "后端接口连接异常";
+        }
+        else if (message.includes("timeout")) {
+            message = "系统接口请求超时";
+        }
+        else if (message.includes("Request failed with status code")) {
+            message = "系统接口" + message.substr(message.length - 3) + "异常";
+        }
+        Message({
+            message: message,
+            type: 'error',
+            duration: 5 * 1000
+        })
+        return Promise.reject(error)
+    }
+)
+
+// 文件下载
+function downloadFileByBlob(blobUrl, filename) {
+    const eleLink = document.createElement('a')
+    eleLink.download = filename
+    eleLink.style.display = 'none'
+    eleLink.href = blobUrl
+    // 触发点击
+    document.body.appendChild(eleLink)
+    eleLink.click()
+    // 然后移除
+    document.body.removeChild(eleLink)
+}
+
+export default service
+
+export { baseURL }

@@ -1,0 +1,1 @@
+npm install bpmn-process-designer-0.0.1.tgz 
